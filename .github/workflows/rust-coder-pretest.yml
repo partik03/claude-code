@@ -58,6 +58,7 @@ jobs:
       - name: Clone source repository
         run: |
           echo "Cloning repository: ${{ inputs.repo_url }}"
+          rm -rf source_repo
           git clone "${{ inputs.repo_url }}" source_repo
           echo "Repository cloned successfully"
           echo "Files found:"
@@ -66,11 +67,15 @@ jobs:
       - name: Generate code prompt
         id: prompt
         run: |
-          echo "Generating code prompt using code2prompt..."
+          echo "Generating code prompt..."
           LANGUAGE="${{ inputs.language }}"
           
-          # Use code2prompt with correct syntax - specify the source directory
-          code2prompt source_repo --output=code_prompt.txt
+          # Simple approach: find and concatenate source files
+          if [ "$LANGUAGE" = "python" ]; then
+            find source_repo -name "*.py" -type f -exec cat {} \; > code_prompt.txt
+          else
+            find source_repo -name "*.cpp" -o -name "*.h" -o -name "*.hpp" -o -name "*.cc" -o -name "*.cxx" -type f -exec cat {} \; > code_prompt.txt
+          fi
           
           PROMPT_SIZE=$(wc -c < code_prompt.txt)
           echo "Prompt generated: $PROMPT_SIZE characters"
