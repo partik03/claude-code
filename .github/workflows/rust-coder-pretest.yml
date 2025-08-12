@@ -104,68 +104,117 @@ jobs:
           
       - name: Call LLM API
         id: llm
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           LLM_PROVIDER="${{ inputs.llm_provider }}"
           MODEL="${{ inputs.model }}"
-          PROMPT_CONTENT=$(cat rust_prompt.txt)
+          
+          # Read and escape the prompt content for JSON
+          PROMPT_CONTENT=$(cat rust_prompt.txt | jq -Rs .)
           
           if [ "$LLM_PROVIDER" = "openai" ]; then
-            if [ -z "${{ secrets.OPENAI_API_KEY }}" ]; then
+            echo "Checking OpenAI API key..."
+            if [ -z "$OPENAI_API_KEY" ]; then
               echo "❌ OPENAI_API_KEY not set"
+              echo "This is expected when running locally without secrets configured."
+              echo "In production, make sure to set OPENAI_API_KEY as a GitHub secret."
               exit 1
             fi
+            echo "✅ OpenAI API key is set (length: ${#OPENAI_API_KEY} characters)"
             
             echo "Calling OpenAI API..."
-            curl -s -X POST "https://api.openai.com/v1/chat/completions" \
-              -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
-              -H "Content-Type: application/json" \
-              -d '{
-                "model": "'"$MODEL"'",
+            
+            # Create JSON payload with proper escaping
+            jq -n \
+              --arg model "$MODEL" \
+              --arg prompt "$(cat rust_prompt.txt)" \
+              '{
+                "model": $model,
                 "messages": [
                   {"role": "system", "content": "You are an expert Rust developer. Output only Rust code in code blocks."},
-                  {"role": "user", "content": "'"$PROMPT_CONTENT"'"}
+                  {"role": "user", "content": $prompt}
                 ],
                 "max_tokens": 4000,
                 "temperature": 0.1
-              }' > llm_response.json
+              }' > request_payload.json
+            
+            curl -s -X POST "https://api.openai.com/v1/chat/completions" \
+              -H "Authorization: Bearer $OPENAI_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d @request_payload.json > llm_response.json
+            
+            # Check for errors
+            if jq -e '.error' llm_response.json > /dev/null 2>&1; then
+              echo "❌ OpenAI API Error:"
+              jq -r '.error.message' llm_response.json
+              exit 1
+            fi
             
             jq -r '.choices[0].message.content' llm_response.json > llm_output.txt
             
           elif [ "$LLM_PROVIDER" = "claude" ]; then
-            if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "Checking Claude API key..."
+            if [ -z "$ANTHROPIC_API_KEY" ]; then
               echo "❌ ANTHROPIC_API_KEY not set"
+              echo "This is expected when running locally without secrets configured."
+              echo "In production, make sure to set ANTHROPIC_API_KEY as a GitHub secret."
               exit 1
             fi
+            echo "✅ Claude API key is set (length: ${#ANTHROPIC_API_KEY} characters)"
             
             echo "Calling Claude API..."
-            curl -s -X POST "https://api.anthropic.com/v1/messages" \
-              -H "x-api-key: ${{ secrets.ANTHROPIC_API_KEY }}" \
-              -H "Content-Type: application/json" \
-              -H "anthropic-version: 2023-06-01" \
-              -d '{
-                "model": "'"$MODEL"'",
+            
+            # Create JSON payload with proper escaping
+            jq -n \
+              --arg model "$MODEL" \
+              --arg prompt "$(cat rust_prompt.txt)" \
+              '{
+                "model": $model,
                 "max_tokens": 4000,
                 "messages": [
-                  {"role": "user", "content": "'"$PROMPT_CONTENT"'"}
+                  {"role": "user", "content": $prompt}
                 ]
-              }' > llm_response.json
+              }' > request_payload.json
+            
+            curl -s -X POST "https://api.anthropic.com/v1/messages" \
+              -H "x-api-key: $ANTHROPIC_API_KEY" \
+              -H "Content-Type: application/json" \
+              -H "anthropic-version: 2023-06-01" \
+              -d @request_payload.json > llm_response.json
+            
+            # Check for errors
+            if jq -e '.error' llm_response.json > /dev/null 2>&1; then
+              echo "❌ Claude API Error:"
+              jq -r '.error.message' llm_response.json
+              exit 1
+            fi
             
             jq -r '.content[0].text' llm_response.json > llm_output.txt
             
           elif [ "$LLM_PROVIDER" = "gemini" ]; then
-            if [ -z "${{ secrets.GEMINI_API_KEY }}" ]; then
+            echo "Checking Gemini API key..."
+            if [ -z "$GEMINI_API_KEY" ]; then
               echo "❌ GEMINI_API_KEY not set"
+              echo "This is expected when running locally without secrets configured."
+              echo "In production, make sure to set GEMINI_API_KEY as a GitHub secret."
               exit 1
             fi
+            echo "✅ Gemini API key is set (length: ${#GEMINI_API_KEY} characters)"
             
             echo "Calling Gemini API..."
-            curl -s -X POST "https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
-              -H "Content-Type: application/json" \
-              -d '{
+            
+            # Create JSON payload with proper escaping
+            jq -n \
+              --arg model "$MODEL" \
+              --arg prompt "$(cat rust_prompt.txt)" \
+              '{
                 "contents": [
                   {
                     "parts": [
-                      {"text": "'"$PROMPT_CONTENT"'"}
+                      {"text": $prompt}
                     ]
                   }
                 ],
@@ -173,9 +222,23 @@ jobs:
                   "maxOutputTokens": 4000,
                   "temperature": 0.1
                 }
-              }' > llm_response.json
+              }' > request_payload.json
+            
+            curl -s -X POST "https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_API_KEY}" \
+              -H "Content-Type: application/json" \
+              -d @request_payload.json > llm_response.json
+            
+            # Check for errors
+            if jq -e '.error' llm_response.json > /dev/null 2>&1; then
+              echo "❌ Gemini API Error:"
+              jq -r '.error.message' llm_response.json
+              exit 1
+            fi
             
             jq -r '.candidates[0].content.parts[0].text' llm_response.json > llm_output.txt
+          else
+            echo "❌ Unknown LLM provider: $LLM_PROVIDER"
+            exit 1
           fi
           
           echo "LLM response received: $(wc -c < llm_output.txt) characters"
