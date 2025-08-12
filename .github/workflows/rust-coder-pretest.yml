@@ -1,0 +1,252 @@
+name: Rust Coder Pretest
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_url:
+        description: "GitHub repository URL to port to Rust"
+        required: true
+        type: string
+        default: "https://github.com/mufeedvh/code2prompt"
+      language:
+        description: "Source language"
+        required: false
+        type: choice
+        options:
+          - python
+          - cpp
+        default: "python"
+      llm_provider:
+        description: "LLM provider"
+        required: false
+        type: choice
+        options:
+          - openai
+          - claude
+          - gemini
+        default: "openai"
+      model:
+        description: "Model name"
+        required: false
+        type: string
+        default: "gpt-4o-mini"
+
+jobs:
+  port-to-rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+          
+      - name: Install dependencies
+        run: |
+          pip install code2prompt requests
+          
+      - name: Clone source repository
+        run: |
+          echo "Cloning repository: ${{ inputs.repo_url }}"
+          git clone "${{ inputs.repo_url }}" source_repo
+          echo "Repository cloned successfully"
+          echo "Files found:"
+          find source_repo -type f -name "*.py" -o -name "*.cpp" -o -name "*.h" | head -10
+          
+      - name: Generate code prompt
+        id: prompt
+        run: |
+          echo "Generating code prompt using code2prompt..."
+          LANGUAGE="${{ inputs.language }}"
+          if [ "$LANGUAGE" = "python" ]; then
+            code2prompt source_repo --include="*.py" --exclude="__pycache__/*,*.pyc,*.pyo" --output-file code_prompt.txt
+          else
+            code2prompt source_repo --include="*.cpp,*.h,*.hpp,*.cc,*.cxx" --exclude="build/*,node_modules/*" --output-file code_prompt.txt
+          fi
+          PROMPT_SIZE=$(wc -c < code_prompt.txt)
+          echo "Prompt generated: $PROMPT_SIZE characters"
+          echo "prompt_size=$PROMPT_SIZE" >> $GITHUB_OUTPUT
+          
+      - name: Create Rust porting prompt
+        run: |
+          LANGUAGE="${{ inputs.language }}"
+          PROMPT_CONTENT=$(cat code_prompt.txt)
+          
+          cat > rust_prompt.txt << EOF
+          You are an expert Rust developer. Port this $LANGUAGE project to Rust.
+          
+          SOURCE CODE:
+          $PROMPT_CONTENT
+          
+          INSTRUCTIONS:
+          1. Create a single Rust file (src/main.rs) that implements the core functionality
+          2. Use only the Rust standard library - no external crates
+          3. Make it compile and run successfully
+          4. Output ONLY the Rust code inside a \`\`\`rust code block
+          5. No explanations, comments, or markdown outside the code block
+          
+          Output the complete Rust code:
+          EOF
+          
+      - name: Call LLM API
+        id: llm
+        run: |
+          LLM_PROVIDER="${{ inputs.llm_provider }}"
+          MODEL="${{ inputs.model }}"
+          PROMPT_CONTENT=$(cat rust_prompt.txt)
+          
+          if [ "$LLM_PROVIDER" = "openai" ]; then
+            if [ -z "${{ secrets.OPENAI_API_KEY }}" ]; then
+              echo "❌ OPENAI_API_KEY not set"
+              exit 1
+            fi
+            
+            echo "Calling OpenAI API..."
+            curl -s -X POST "https://api.openai.com/v1/chat/completions" \
+              -H "Authorization: Bearer ${{ secrets.OPENAI_API_KEY }}" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "model": "'"$MODEL"'",
+                "messages": [
+                  {"role": "system", "content": "You are an expert Rust developer. Output only Rust code in code blocks."},
+                  {"role": "user", "content": "'"$PROMPT_CONTENT"'"}
+                ],
+                "max_tokens": 4000,
+                "temperature": 0.1
+              }' > llm_response.json
+            
+            jq -r '.choices[0].message.content' llm_response.json > llm_output.txt
+            
+          elif [ "$LLM_PROVIDER" = "claude" ]; then
+            if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+              echo "❌ ANTHROPIC_API_KEY not set"
+              exit 1
+            fi
+            
+            echo "Calling Claude API..."
+            curl -s -X POST "https://api.anthropic.com/v1/messages" \
+              -H "x-api-key: ${{ secrets.ANTHROPIC_API_KEY }}" \
+              -H "Content-Type: application/json" \
+              -H "anthropic-version: 2023-06-01" \
+              -d '{
+                "model": "'"$MODEL"'",
+                "max_tokens": 4000,
+                "messages": [
+                  {"role": "user", "content": "'"$PROMPT_CONTENT"'"}
+                ]
+              }' > llm_response.json
+            
+            jq -r '.content[0].text' llm_response.json > llm_output.txt
+            
+          elif [ "$LLM_PROVIDER" = "gemini" ]; then
+            if [ -z "${{ secrets.GEMINI_API_KEY }}" ]; then
+              echo "❌ GEMINI_API_KEY not set"
+              exit 1
+            fi
+            
+            echo "Calling Gemini API..."
+            curl -s -X POST "https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${{ secrets.GEMINI_API_KEY }}" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "contents": [
+                  {
+                    "parts": [
+                      {"text": "'"$PROMPT_CONTENT"'"}
+                    ]
+                  }
+                ],
+                "generationConfig": {
+                  "maxOutputTokens": 4000,
+                  "temperature": 0.1
+                }
+              }' > llm_response.json
+            
+            jq -r '.candidates[0].content.parts[0].text' llm_response.json > llm_output.txt
+          fi
+          
+          echo "LLM response received: $(wc -c < llm_output.txt) characters"
+          
+      - name: Extract Rust code
+        run: |
+          echo "Extracting Rust code from LLM response..."
+          python3 scripts/extract_rust.py < llm_output.txt > main.rs
+          echo "Rust code extracted: $(wc -c < main.rs) characters"
+          
+      - name: Create Rust project and compile
+        id: compile
+        run: |
+          echo "Creating Rust project..."
+          cargo new rust-port --bin
+          cp main.rs rust-port/src/main.rs
+          
+          echo "Compiling Rust project..."
+          cd rust-port
+          cargo build
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ Rust project compiled successfully!"
+            echo "compilation_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Compilation failed"
+            echo "compilation_status=failed" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+      - name: Create demo script
+        run: |
+          cat > demo_script.sh << 'EOF'
+          #!/bin/bash
+          echo "=== Rust Coder Pretest Demo ==="
+          echo "Source Repository: ${{ inputs.repo_url }}"
+          echo "Language: ${{ inputs.language }}"
+          echo "LLM Provider: ${{ inputs.llm_provider }}"
+          echo "Model: ${{ inputs.model }}"
+          echo ""
+          echo "1. Repository cloned and analyzed"
+          echo "2. Code prompt generated: ${{ steps.prompt.outputs.prompt_size }} characters"
+          echo "3. LLM generated Rust code"
+          echo "4. Rust project created and compiled: ${{ steps.compile.outputs.compilation_status }}"
+          echo ""
+          echo "=== Demo Complete ==="
+          EOF
+          
+          chmod +x demo_script.sh
+          
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-coder-results
+          path: |
+            source_repo/
+            rust-port/
+            code_prompt.txt
+            llm_output.txt
+            main.rs
+            demo_script.sh
+            llm_response.json
+          retention-days: 30
+          
+      - name: Create summary
+        run: |
+          echo "## Rust Coder Pretest Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📊 Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Source Repository**: ${{ inputs.repo_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Language**: ${{ inputs.language }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **LLM Provider**: ${{ inputs.llm_provider }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Model**: ${{ inputs.model }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Prompt Size**: ${{ steps.prompt.outputs.prompt_size }} characters" >> $GITHUB_STEP_SUMMARY
+          echo "- **Compilation**: ${{ steps.compile.outputs.compilation_status }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### 📁 Generated Files" >> $GITHUB_STEP_SUMMARY
+          echo "All files are available in the artifacts for download." >> $GITHUB_STEP_SUMMARY
