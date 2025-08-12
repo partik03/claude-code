@@ -68,11 +68,10 @@ jobs:
         run: |
           echo "Generating code prompt using code2prompt..."
           LANGUAGE="${{ inputs.language }}"
-          if [ "$LANGUAGE" = "python" ]; then
-            code2prompt source_repo --include="*.py" --exclude="__pycache__/*,*.pyc,*.pyo" --output-file code_prompt.txt
-          else
-            code2prompt source_repo --include="*.cpp,*.h,*.hpp,*.cc,*.cxx" --exclude="build/*,node_modules/*" --output-file code_prompt.txt
-          fi
+          
+          # Use code2prompt with correct syntax - specify the source directory
+          code2prompt source_repo --output=code_prompt.txt
+          
           PROMPT_SIZE=$(wc -c < code_prompt.txt)
           echo "Prompt generated: $PROMPT_SIZE characters"
           echo "prompt_size=$PROMPT_SIZE" >> $GITHUB_OUTPUT
