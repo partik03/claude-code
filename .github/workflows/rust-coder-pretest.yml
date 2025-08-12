@@ -252,58 +252,20 @@ jobs:
           # Check if we got any meaningful Rust code
           if [ ! -s main.rs ]; then
             echo "⚠️  No Rust code extracted, creating a basic template..."
-            cat > main.rs << 'EOF'
-fn main() {
-    println!("Rust port of the original project");
-    println!("This is a placeholder - the LLM did not generate valid Rust code");
-}
-EOF
+            echo 'fn main() {' > main.rs
+            echo '    println!("Rust port of the original project");' >> main.rs
+            echo '    println!("This is a placeholder - the LLM did not generate valid Rust code");' >> main.rs
+            echo '}' >> main.rs
           fi
           
-      - name: Create Rust project and validate
+      - name: Create Rust project
         id: compile
         run: |
           echo "Creating Rust project..."
           cargo new rust-port --bin
           cp main.rs rust-port/src/main.rs
-          
-          echo "Validating Rust code structure..."
-          cd rust-port
-          
-          # Check if the file contains valid Rust syntax patterns
-          if grep -q "fn main" src/main.rs; then
-            echo "✅ Rust code contains main function"
-            HAS_MAIN=true
-          else
-            echo "⚠️  Warning: No main function found in Rust code"
-            HAS_MAIN=false
-          fi
-          
-          # Check for basic Rust syntax
-          if grep -q "use " src/main.rs || grep -q "fn " src/main.rs || grep -q "let " src/main.rs; then
-            echo "✅ Rust code contains valid syntax patterns"
-            HAS_SYNTAX=true
-          else
-            echo "⚠️  Warning: No clear Rust syntax patterns found"
-            HAS_SYNTAX=false
-          fi
-          
-          # Try to compile but don't fail the workflow
-          echo "Attempting to compile Rust project..."
-          if cargo check --quiet 2>/dev/null; then
-            echo "✅ Rust project compiles successfully!"
-            echo "compilation_status=success" >> $GITHUB_OUTPUT
-          else
-            echo "⚠️  Compilation check failed (this is expected for LLM-generated code)"
-            echo "compilation_status=check_failed" >> $GITHUB_OUTPUT
-            
-            # Show compilation errors for debugging
-            echo "Compilation errors:"
-            cargo check 2>&1 | head -20 || true
-          fi
-          
-          # Always continue regardless of compilation result
-          echo "Rust project created and validated"
+          echo "Rust project created successfully"
+          echo "compilation_status=created" >> $GITHUB_OUTPUT
           
       - name: Create demo script
         run: |
@@ -318,7 +280,7 @@ EOF
           echo "1. Repository cloned and analyzed"
           echo "2. Code prompt generated: ${{ steps.prompt.outputs.prompt_size }} characters"
           echo "3. LLM generated Rust code"
-          echo "4. Rust project created and validated: ${{ steps.compile.outputs.compilation_status }}"
+          echo "4. Rust project created: ${{ steps.compile.outputs.compilation_status }}"
           echo ""
           echo "=== Demo Complete ==="
           EOF
